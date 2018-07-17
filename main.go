@@ -1,14 +1,12 @@
 package main
 
 import (
-	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"path"
+	"sync"
 
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
 	"github.com/gorilla/mux"
 )
 
@@ -17,58 +15,87 @@ func main() {
 	if !ok {
 		port = "80"
 	}
-	mongoURL, ok := os.LookupEnv("MONGO_URL")
-	if !ok {
-		log.Fatalf("MONGO_URL not set. Example: MONGO_URL=mongodb://myserver:27017")
-	}
-	mongoDatabase, ok := os.LookupEnv("MONGO_DATABASE")
-	if !ok {
-		mongoDatabase = "sard"
-	}
-	mongoCollection, ok := os.LookupEnv("MONGO_COLLECTION")
-	if !ok {
-		mongoCollection = "material"
-	}
 
-	client, err := mgo.Dial(mongoURL)
-	if err != nil {
-		log.Fatalf("could not connect to mongo database: %v\n", err)
+	l := lock{
+		lockedPaths: make(map[string]bool),
 	}
-
-	collection := client.DB(mongoDatabase).C(mongoCollection)
 
 	r := mux.NewRouter()
-	r.HandleFunc("/", getListTodo(collection)).Methods("GET")
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "Paths:\n")
+		fmt.Fprintf(w, "	/lock?evidencePath=...\n")
+		fmt.Fprintf(w, "	/unlock?evidencePath=...\n")
+	}).Methods("GET")
+	r.HandleFunc("/lock", getLock(&l)).Methods("GET")
+	r.HandleFunc("/unlock", getUnlock(&l)).Methods("GET")
 
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		log.Fatalf("could not start server: %v\n", err)
 	}
 }
 
-func getListTodo(collection *mgo.Collection) func(w http.ResponseWriter, r *http.Request) {
+type lock struct {
+	sync.Mutex
+	lockedPaths map[string]bool
+}
+
+func (l *lock) lockPath(p string) bool {
+	l.Lock()
+	defer l.Unlock()
+	if _, ok := l.lockedPaths[p]; ok {
+		return false
+	}
+	l.lockedPaths[p] = true
+	return true
+}
+
+func (l *lock) unlockPath(p string) {
+	l.Lock()
+	defer l.Unlock()
+	delete(l.lockedPaths, p)
+}
+
+func getLock(l *lock) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		docs := make([]struct {
-			Path   string `bson:"path" json:"evidencePath"`
-			Output string `json:"outputPath"`
-		}, 0)
-
-		err := collection.Find(
-			bson.M{"state": "todo"},
-		).Limit(100).Select(bson.M{"path": 1}).All(&docs)
-		if err != nil {
-			log.Fatalf("error fetching database: %v\n", err)
+		evidencePaths, ok := r.URL.Query()["evidencePath"]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "parameter not set: evidencePath")
+			return
 		}
-
-		for i := 0; i < len(docs); i++ {
-			docs[i].Output = path.Join(path.Dir(docs[i].Path), "SARD")
+		if len(evidencePaths) != 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "use of multiple evidence paths is unsuported")
+			return
 		}
-
-		docsJSON, err := json.Marshal(docs)
-		if err != nil {
-			log.Fatalf("error building json: %v\n", err)
+		evidencePath := evidencePaths[0]
+		if ok := l.lockPath(evidencePath); !ok {
+			w.WriteHeader(http.StatusLocked)
+			fmt.Fprintf(w, "resource already locked")
+			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write(docsJSON)
+		fmt.Fprintf(w, "ok")
+	}
+}
+
+func getUnlock(l *lock) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		evidencePaths, ok := r.URL.Query()["evidencePath"]
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "parameter not set: evidencePath")
+			return
+		}
+		if len(evidencePaths) != 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "use of multiple evidence paths is unsuported")
+			return
+		}
+		evidencePath := evidencePaths[0]
+		l.unlockPath(evidencePath)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "ok")
 	}
 }
