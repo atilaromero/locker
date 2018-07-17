@@ -66,7 +66,7 @@ func getLock(l *lock) func(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(evidencePaths) != 1 {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "use of multiple evidence paths is unsuported")
+			fmt.Fprintf(w, "use of multiple evidence paths is not supported")
 			return
 		}
 		evidencePath := evidencePaths[0]
