@@ -44,6 +44,11 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/", handler(&l)).Methods("POST")
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		for k := range l.lockedPaths {
+			fmt.Fprintf(w, "%s", k)
+		}
+	}).Methods("GET")
 
 	if err := http.ListenAndServe(":"+port, r); err != nil {
 		log.Fatalf("could not start server: %v\n", err)
