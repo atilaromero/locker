@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 
@@ -32,6 +33,24 @@ func (l *lock) unlockPath(p string) {
 	delete(l.lockedPaths, p)
 }
 
+func (l *lock) lockPathAndRespond(p string, w http.ResponseWriter) {
+	if ok := l.lockPath(p); !ok {
+		w.WriteHeader(http.StatusLocked)
+		fmt.Fprintf(w, "resource already locked\n")
+		return
+	}
+	fmt.Printf("just locked: %v\n", p)
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "ok")
+}
+
+func (l *lock) unlockPathAndRespond(p string, w http.ResponseWriter) {
+	l.unlockPath(p)
+	fmt.Printf("unlocked   : %v\n", p)
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "ok")
+}
+
 func main() {
 	port, ok := os.LookupEnv("PORT")
 	if !ok {
@@ -44,9 +63,24 @@ func main() {
 
 	r := mux.NewRouter()
 	r.HandleFunc("/", handler(&l)).Methods("POST")
+	r.HandleFunc("/unlock/", func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		p := r.FormValue("path")
+		l.unlockPathAndRespond(p, w)
+	}).Methods("GET")
+	r.HandleFunc("/lock/", func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		p := r.FormValue("path")
+		l.lockPathAndRespond(p, w)
+	}).Methods("GET")
+
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		w.Header().Set("Content-Type", "text/html")
 		for k := range l.lockedPaths {
-			fmt.Fprintf(w, "%s", k)
+			fmt.Fprintf(w, "%s\n", k)
+			fmt.Fprintf(w, "<a href='./unlock/?path=%s'>Unlock</a>\n", url.QueryEscape(k))
+			fmt.Fprintf(w, "<br>\n")
 		}
 	}).Methods("GET")
 
@@ -72,17 +106,11 @@ func handler(l *lock) func(w http.ResponseWriter, r *http.Request) {
 
 		switch event.Type {
 		case "LOCK":
-			if ok := l.lockPath(event.Payload.EvidencePath); !ok {
-				w.WriteHeader(http.StatusLocked)
-				fmt.Fprintf(w, "resource already locked\n")
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, "ok")
+			p := event.Payload.EvidencePath
+			l.lockPathAndRespond(p, w)
 		case "UNLOCK":
-			l.unlockPath(event.Payload.EvidencePath)
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintf(w, "ok")
+			p := event.Payload.EvidencePath
+			l.unlockPathAndRespond(p, w)
 		default:
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprintf(w, "event type not known: %v\n", event.Type)
